@@ -4,12 +4,13 @@
 # in the Rust host, which injects pixels as opts.__img.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-REPO="$(cd "$HERE/../.." && pwd)"
+# Vendored upstream source lives inside the crate (skill/js/src) — no repo-root dep.
+SRC="$HERE/../skill/js/src"
 OUT="$HERE/../assets/tools.js"
 
 # Refresh the gradient-extractor copy from upstream, patching loadImage so the
 # Rust host can inject decoded pixels via opts.__img.
-python3 - "$REPO/src/gradient-extractor.js" "$HERE/gradient-extractor.js" <<'PY'
+python3 - "$SRC/gradient-extractor.js" "$HERE/gradient-extractor.js" <<'PY'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 s = open(src).read().replace('const img = loadImage(path);', 'const img = opts.__img || loadImage(path);')
@@ -17,7 +18,7 @@ open(dst, 'w').write(s)
 PY
 
 # Pure modules copied verbatim from upstream.
-cp "$REPO/src/shadcn.js" "$HERE/shadcn.js"
+cp "$SRC/shadcn.js" "$HERE/shadcn.js"
 
 npx --no-install esbuild "$HERE/entry.mjs" \
   --bundle --format=iife --platform=neutral --target=es2020 \

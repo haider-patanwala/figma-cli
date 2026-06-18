@@ -7,12 +7,14 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-REPO="$(cd "$HERE/../.." && pwd)"
+# Vendored upstream source lives inside the crate (skill/js/src), so the rust/
+# dir is fully self-contained — no dependency on the repo root.
+SRC="$HERE/../skill/js/src"
 OUT="$HERE/../assets/engine.js"
 
 # Copy the real codegen source next to our stub so its relative
 # `./figma-patch.js` import resolves to the stub (not the real, fs-using one).
-cp "$REPO/src/figma-client.js" "$HERE/figma-client.js"
+cp "$SRC/figma-client.js" "$HERE/figma-client.js"
 cp "$HERE/figma-patch.stub.js" "$HERE/figma-patch.js"
 
 npx --no-install esbuild "$HERE/entry.mjs" \

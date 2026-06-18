@@ -6,7 +6,7 @@
 //! Rust daemon and the same FigCli plugin.
 //!
 //! The Node CLI is located via (in order): $FIGMA_CLI_JS, a `js/index.js` next to
-//! the binary (skill layout), or `../src/index.js` from the repo. If none is
+//! the binary (skill layout), or `skill/js/index.js` within the crate. If none is
 //! found (or Node isn't installed), we print a clear, actionable message instead
 //! of failing opaquely.
 
@@ -26,8 +26,9 @@ fn find_js_cli() -> Option<PathBuf> {
     if let Some(dir) = exe.parent() {
         candidates.push(dir.join("js/index.js"));
         candidates.push(dir.join("../js/index.js"));
-        // dev layout: rust/target/{debug,release}/figma-cli -> ../../../src/index.js
-        candidates.push(dir.join("../../../src/index.js"));
+        // dev layout: rust/target/{debug,release}/figma-cli -> rust/skill/js/index.js
+        // (self-contained inside the crate; no dependency on the repo root)
+        candidates.push(dir.join("../../skill/js/index.js"));
     }
     candidates.into_iter().find(|p| p.exists())
 }

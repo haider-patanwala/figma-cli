@@ -99,10 +99,20 @@ assets/
   plugin/        # FigCli manifest.json / code.js / ui.html (embedded, written on `connect`)
 ```
 
-Regenerate the bundled engines after changing the upstream JS:
+### Self-contained
+
+The `rust/` directory is self-contained — **building and running the binary need
+nothing from the repo root.** The JS engines (`assets/engine.js`, `assets/tools.js`)
+are committed and embedded via `include_str!`, the FigCli plugin is embedded, and
+the Node fallback ships vendored under `skill/js/` (its source is also the input the
+build scripts read). Verified by building + running with the repo root removed.
+
+Regenerating the bundled engines (only needed when the vendored JS in `skill/js/src`
+changes) requires `esbuild`:
 
 ```bash
 bash engine-src/build-engine.sh && bash tools-src/build-tools.sh && cargo build --release
+# esbuild: `npm i -g esbuild` or run from a dir where it's available
 ```
 
 ## License

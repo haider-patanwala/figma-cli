@@ -190,6 +190,11 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// FigJam operations (sticky/shape/text/connect/move/update/info/nodes).
+    Figjam {
+        #[command(subcommand)]
+        action: FigjamAction,
+    },
     /// Export a node (or selection) to a file (png/svg/jpg/pdf).
     Export {
         /// Format: png, svg, jpg, pdf.
@@ -241,6 +246,19 @@ enum ExportTokensAction {
 enum ConfigAction {
     Set { key: String, value: String },
     Get { key: String },
+}
+
+#[derive(Subcommand)]
+enum FigjamAction {
+    Sticky { text: String, #[arg(short, long, default_value_t = 0.0)] x: f64, #[arg(short, long, default_value_t = 0.0)] y: f64, #[arg(short, long)] color: Option<String> },
+    Shape { text: String, #[arg(short, long, default_value_t = 0.0)] x: f64, #[arg(short, long, default_value_t = 0.0)] y: f64, #[arg(short, long, default_value_t = 200.0)] width: f64, #[arg(short = 'H', long, default_value_t = 100.0)] height: f64, #[arg(short = 't', long, default_value = "ROUNDED_RECTANGLE")] r#type: String },
+    Text { content: String, #[arg(short, long, default_value_t = 0.0)] x: f64, #[arg(short, long, default_value_t = 0.0)] y: f64, #[arg(short, long, default_value_t = 16.0)] size: f64 },
+    Connect { start_id: String, end_id: String },
+    Delete { node_id: String },
+    Move { node_id: String, x: f64, y: f64 },
+    Update { node_id: String, text: String },
+    Info,
+    Nodes { #[arg(short, long, default_value_t = 20)] limit: u32 },
 }
 
 #[derive(Subcommand)]
@@ -452,6 +470,20 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
             Ok(())
+        }
+        Commands::Figjam { action } => {
+            let code = match action {
+                FigjamAction::Sticky { text, x, y, color } => cmds::figjam_sticky(&text, x, y, color.as_deref()),
+                FigjamAction::Shape { text, x, y, width, height, r#type } => cmds::figjam_shape(&text, x, y, width, height, &r#type),
+                FigjamAction::Text { content, x, y, size } => cmds::figjam_text(&content, x, y, size),
+                FigjamAction::Connect { start_id, end_id } => cmds::figjam_connect(&start_id, &end_id),
+                FigjamAction::Delete { node_id } => cmds::delete(Some(&node_id)),
+                FigjamAction::Move { node_id, x, y } => cmds::figjam_move(&node_id, x, y),
+                FigjamAction::Update { node_id, text } => cmds::figjam_update(&node_id, &text),
+                FigjamAction::Info => cmds::figjam_info().to_string(),
+                FigjamAction::Nodes { limit } => cmds::figjam_nodes(limit),
+            };
+            let v = exec_eval(&code).await?; print_result(&v, json); Ok(())
         }
         Commands::Find { query } => {
             let code = format!(

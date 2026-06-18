@@ -342,6 +342,59 @@ pub fn duplicate(node_id: Option<&str>, offset: f64) -> String {
     }
 }
 // --------------------------------------------------------------------------
+// figjam (runs in the same plugin context; FigJam editor)
+// --------------------------------------------------------------------------
+
+pub fn figjam_sticky(text: &str, x: f64, y: f64, color: Option<&str>) -> String {
+    let fill = match color.and_then(crate::jsgen::hex_to_rgb) {
+        Some((r, g, b)) => format!("sticky.fills = [{{ type: 'SOLID', color: {{ r: {r}, g: {g}, b: {b} }} }}];"),
+        None => String::new(),
+    };
+    wrap_async(&format!(
+        "const sticky = figma.createSticky();\nsticky.x = {x}; sticky.y = {y};\n{fill}\nawait figma.loadFontAsync({{ family: 'Inter', style: 'Medium' }});\nsticky.text.characters = {t};\nreturn {{ id: sticky.id, x: sticky.x, y: sticky.y }};",
+        t = js_string(text)
+    ))
+}
+pub fn figjam_shape(text: &str, x: f64, y: f64, w: f64, h: f64, shape_type: &str) -> String {
+    wrap_async(&format!(
+        "const shape = figma.createShapeWithText();\nshape.shapeType = {st};\nshape.x = {x}; shape.y = {y};\nshape.resize({w}, {h});\nif (shape.text) {{ await figma.loadFontAsync({{ family: 'Inter', style: 'Medium' }}); shape.text.characters = {t}; }}\nreturn {{ id: shape.id, x: shape.x, y: shape.y }};",
+        st = js_string(shape_type), t = js_string(text)
+    ))
+}
+pub fn figjam_text(content: &str, x: f64, y: f64, size: f64) -> String {
+    wrap_async(&format!(
+        "const textNode = figma.createText();\ntextNode.x = {x}; textNode.y = {y};\nawait figma.loadFontAsync({{ family: 'Inter', style: 'Medium' }});\ntextNode.fontName = {{ family: 'Inter', style: 'Medium' }};\ntextNode.characters = {t};\ntextNode.fontSize = {size};\nreturn {{ id: textNode.id, x: textNode.x, y: textNode.y }};",
+        t = js_string(content)
+    ))
+}
+pub fn figjam_connect(start_id: &str, end_id: &str) -> String {
+    wrap_async(&format!(
+        "const startNode = await figma.getNodeByIdAsync({s});\nconst endNode = await figma.getNodeByIdAsync({e});\nif (!startNode || !endNode) return {{ error: 'Node not found' }};\nconst connector = figma.createConnector();\nconnector.connectorStart = {{ endpointNodeId: startNode.id, magnet: 'AUTO' }};\nconnector.connectorEnd = {{ endpointNodeId: endNode.id, magnet: 'AUTO' }};\nreturn {{ id: connector.id }};",
+        s = js_string(start_id), e = js_string(end_id)
+    ))
+}
+pub fn figjam_move(node_id: &str, x: f64, y: f64) -> String {
+    wrap_async(&format!(
+        "const n = await figma.getNodeByIdAsync({id}); if (!n) return {{ error: 'Node not found' }}; n.x = {x}; n.y = {y}; return {{ id: n.id, x: n.x, y: n.y }};",
+        id = js_string(node_id)
+    ))
+}
+pub fn figjam_update(node_id: &str, text: &str) -> String {
+    wrap_async(&format!(
+        "const n = await figma.getNodeByIdAsync({id}); if (!n) return {{ error: 'Node not found' }}; await figma.loadFontAsync({{ family: 'Inter', style: 'Medium' }}); if (n.text) n.text.characters = {t}; else if (n.type === 'TEXT') n.characters = {t}; return {{ id: n.id }};",
+        id = js_string(node_id), t = js_string(text)
+    ))
+}
+pub fn figjam_info() -> &'static str {
+    "(async () => { const p = figma.currentPage; return { name: p.name, id: p.id, childCount: p.children.length }; })()"
+}
+pub fn figjam_nodes(limit: u32) -> String {
+    wrap_async(&format!(
+        "return figma.currentPage.children.slice(0, {limit}).map(n => ({{ id: n.id, type: n.type, name: n.name, x: Math.round(n.x), y: Math.round(n.y) }}));"
+    ))
+}
+
+// --------------------------------------------------------------------------
 // variables: create / find
 // --------------------------------------------------------------------------
 

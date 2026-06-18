@@ -6,8 +6,44 @@
 import {
   extractGradient, extractMesh, buildMeshFromColors, buildFigmaPaint, buildCssString,
 } from "./gradient-extractor.js";
+import {
+  listComponents, getComponent, getVariety, getAllComponents,
+} from "./shadcn.js";
 
 globalThis.__tools = {
+  // shadcn/ui: list available components.
+  shadcnList() {
+    return JSON.stringify(listComponents());
+  },
+  // shadcn/ui: select component JSX to render. argsJson: { names, all, count }.
+  // Mirrors the selection logic in commands/variants.js `shadcn add`.
+  shadcnAdd(argsJson) {
+    const { names, all, count } = JSON.parse(argsJson);
+    let items = [];
+    if (all) {
+      items = getAllComponents();
+    } else {
+      const userPassedCount = count !== 1;
+      for (const name of names) {
+        const comp = getComponent(name);
+        if (!comp) return JSON.stringify({ error: "Unknown component: " + name });
+        if (userPassedCount) {
+          const varietySet = getVariety(name, count);
+          if (varietySet) {
+            items.push(...varietySet);
+          } else {
+            const base = comp[0];
+            const cleanName = base.name.split(" / ")[0];
+            const cleanItem = { ...base, name: cleanName, jsx: base.jsx.replace(/name="[^"]*"/, 'name="' + cleanName + '"') };
+            for (let i = 0; i < count; i++) items.push(cleanItem);
+          }
+        } else {
+          items.push(...comp);
+        }
+      }
+    }
+    return JSON.stringify({ items });
+  },
   // Linear gradient from injected pixels. argsJson: { img, direction, stops, trim }
   gradientExtract(argsJson) {
     const a = JSON.parse(argsJson);

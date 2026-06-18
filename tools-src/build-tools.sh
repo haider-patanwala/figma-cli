@@ -16,6 +16,9 @@ s = open(src).read().replace('const img = loadImage(path);', 'const img = opts._
 open(dst, 'w').write(s)
 PY
 
+# Pure modules copied verbatim from upstream.
+cp "$REPO/src/shadcn.js" "$HERE/shadcn.js"
+
 npx --no-install esbuild "$HERE/entry.mjs" \
   --bundle --format=iife --platform=neutral --target=es2020 \
   --alias:pngjs="$HERE/pngjs.stub.js" \

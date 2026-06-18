@@ -203,6 +203,11 @@ enum Commands {
         #[command(subcommand)]
         action: GradientAction,
     },
+    /// shadcn/ui components (requires `tokens preset shadcn`).
+    Shadcn {
+        #[command(subcommand)]
+        action: ShadcnAction,
+    },
     /// Export a node (or selection) to a file (png/svg/jpg/pdf).
     Export {
         /// Format: png, svg, jpg, pdf.
@@ -254,6 +259,18 @@ enum ExportTokensAction {
 enum ConfigAction {
     Set { key: String, value: String },
     Get { key: String },
+}
+
+#[derive(Subcommand)]
+enum ShadcnAction {
+    /// List available shadcn components.
+    List,
+    /// Add component(s) to the canvas. Names, or --all; --count for copies.
+    Add {
+        names: Vec<String>,
+        #[arg(long)] all: bool,
+        #[arg(short, long, default_value_t = 1)] count: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -629,6 +646,39 @@ async fn run(cli: Cli) -> Result<()> {
             print_result(&v, json); Ok(())
         }
         Commands::Gradient { action } => cmd_gradient(action, json).await,
+        Commands::Shadcn { action } => cmd_shadcn(action, json).await,
+    }
+}
+
+async fn cmd_shadcn(action: ShadcnAction, json: bool) -> Result<()> {
+    match action {
+        ShadcnAction::List => {
+            let v: Value = serde_json::from_str(&tools::call("shadcnList", "{}")?)?;
+            print_result(&v, json); Ok(())
+        }
+        ShadcnAction::Add { names, all, count } => {
+            let args = serde_json::json!({ "names": names, "all": all, "count": count }).to_string();
+            let out: Value = serde_json::from_str(&tools::call("shadcnAdd", &args)?)?;
+            if let Some(err) = out.get("error").and_then(|e| e.as_str()) {
+                anyhow::bail!(err.to_string());
+            }
+            // Each item is an independent component → render as a batch (independent nodes).
+            let jsx: Vec<String> = out.get("items").and_then(|i| i.as_array())
+                .map(|a| a.iter().filter_map(|it| it.get("jsx").and_then(|j| j.as_str()).map(String::from)).collect())
+                .unwrap_or_default();
+            if jsx.is_empty() { anyhow::bail!("no components selected (pass names or --all)"); }
+            let req = transport::ExecRequest {
+                action: "render-batch".into(),
+                jsx_array: Some(jsx),
+                gap: Some(40.0),
+                vertical: Some(false),
+                ..Default::default()
+            };
+            lifecycle::ensure_started().await?;
+            let v = transport::exec(req).await?;
+            save_last_render(&v);
+            print_result(&v, json); Ok(())
+        }
     }
 }
 

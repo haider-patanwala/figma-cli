@@ -165,6 +165,21 @@ enum Commands {
         #[command(subcommand)]
         action: AnalyzeAction,
     },
+    /// Slot operations (create/list/reset/convert).
+    Slot {
+        #[command(subcommand)]
+        action: SlotAction,
+    },
+    /// Combine frames/components into a variant set.
+    Variants {
+        #[command(subcommand)]
+        action: VariantsAction,
+    },
+    /// Component property operations (combine into a variant set).
+    Prop {
+        #[command(subcommand)]
+        action: PropAction,
+    },
     /// Export a node (or selection) to a file (png/svg/jpg/pdf).
     Export {
         /// Format: png, svg, jpg, pdf.
@@ -209,6 +224,30 @@ enum NodeAction {
     ToComponent { node_ids: Vec<String> },
     /// Delete node(s) by id.
     Delete { node_ids: Vec<String> },
+}
+
+#[derive(Subcommand)]
+enum SlotAction {
+    Create { name: String, #[arg(short, long, default_value = "col")] flex: String, #[arg(short, long, default_value_t = 0.0)] gap: f64, #[arg(short, long, default_value_t = 0.0)] padding: f64 },
+    List { node_id: Option<String> },
+    Reset { node_id: Option<String> },
+    Convert { node_id: Option<String>, #[arg(short, long, default_value = "Slot")] name: String },
+}
+
+#[derive(Subcommand)]
+enum VariantsAction {
+    /// Combine comma-separated node ids into a variant set.
+    From {
+        ids: String,
+        #[arg(short, long)] property: String,
+        #[arg(short, long)] values: String,
+        #[arg(short, long, default_value = "")] name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PropAction {
+    Combine { ids: String, #[arg(short, long, default_value = "ComponentSet")] name: String },
 }
 
 #[derive(Subcommand)]
@@ -403,6 +442,36 @@ async fn run(cli: Cli) -> Result<()> {
                 AnalyzeAction::Clusters => cmds::analyze_clusters(),
             };
             let v = exec_eval(code).await?; print_result(&v, json); Ok(())
+        }
+        Commands::Slot { action } => {
+            let code = match action {
+                SlotAction::Create { name, flex, gap, padding } => cmds::slot_create(&name, &flex, gap, padding),
+                SlotAction::List { node_id } => cmds::slot_list(node_id.as_deref()),
+                SlotAction::Reset { node_id } => cmds::slot_reset(node_id.as_deref()),
+                SlotAction::Convert { node_id, name } => cmds::slot_convert(node_id.as_deref(), &name),
+            };
+            let v = exec_eval(&code).await?; print_result(&v, json); Ok(())
+        }
+        Commands::Variants { action } => {
+            let code = match action {
+                VariantsAction::From { ids, property, values, name } => {
+                    let id_arr: Vec<String> = ids.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    let val_arr: Vec<String> = values.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    if id_arr.len() < 2 { anyhow::bail!("need at least 2 ids to create a variant set"); }
+                    if id_arr.len() != val_arr.len() { anyhow::bail!("id count ({}) must equal values count ({})", id_arr.len(), val_arr.len()); }
+                    cmds::variants_from(&id_arr, &property, &val_arr, &name)
+                }
+            };
+            let v = exec_eval(&code).await?; print_result(&v, json); Ok(())
+        }
+        Commands::Prop { action } => {
+            let code = match action {
+                PropAction::Combine { ids, name } => {
+                    let id_arr: Vec<String> = ids.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    cmds::prop_combine(&id_arr, &name)
+                }
+            };
+            let v = exec_eval(&code).await?; print_result(&v, json); Ok(())
         }
     }
 }

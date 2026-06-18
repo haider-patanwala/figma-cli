@@ -342,6 +342,71 @@ pub fn duplicate(node_id: Option<&str>, offset: f64) -> String {
     }
 }
 // --------------------------------------------------------------------------
+// slots
+// --------------------------------------------------------------------------
+
+pub fn slot_create(name: &str, flex: &str, gap: f64, padding: f64) -> String {
+    let mode = if flex == "row" { "HORIZONTAL" } else { "VERTICAL" };
+    let body = format!(
+        "const sel = figma.currentPage.selection;\nif (sel.length === 0) return {{ error: 'No component selected' }};\nconst comp = sel[0];\nif (comp.type !== 'COMPONENT' && comp.type !== 'COMPONENT_SET') return {{ error: 'Selected node is not a component' }};\nconst slot = comp.createSlot({name});\nslot.layoutMode = {mode};\nslot.itemSpacing = {gap};\nslot.paddingTop = {p}; slot.paddingBottom = {p}; slot.paddingLeft = {p}; slot.paddingRight = {p};\nreturn {{ success: true, slotId: slot.id, slotName: slot.name, componentName: comp.name }};",
+        name = js_string(name), mode = js_string(mode), gap = gap, p = padding
+    );
+    wrap_async(&body)
+}
+
+pub fn slot_list(node_id: Option<&str>) -> String {
+    let lookup = match node_id {
+        Some(id) => format!("const comp = await figma.getNodeByIdAsync({});", js_string(id)),
+        None => "const sel = figma.currentPage.selection; if (sel.length === 0) return { error: 'No component selected' }; const comp = sel[0];".to_string(),
+    };
+    wrap_async(&format!(
+        "{lookup}\nif (!comp || (comp.type !== 'COMPONENT' && comp.type !== 'COMPONENT_SET')) return {{ error: 'Node is not a component' }};\nfunction findSlots(n, out) {{ if (n.type === 'SLOT') out.push({{ id: n.id, name: n.name }}); if ('children' in n) n.children.forEach(c => findSlots(c, out)); }}\nconst slots = []; findSlots(comp, slots);\nreturn {{ component: comp.name, slots }};"
+    ))
+}
+
+pub fn slot_reset(node_id: Option<&str>) -> String {
+    let lookup = match node_id {
+        Some(id) => format!("let node = await figma.getNodeByIdAsync({});", js_string(id)),
+        None => "const sel = figma.currentPage.selection; if (sel.length === 0) return { error: 'No slot selected' }; let node = sel[0];".to_string(),
+    };
+    wrap_async(&format!(
+        "{lookup}\nif (node.type !== 'SLOT') {{ if (node.type === 'INSTANCE') {{ const slots = node.children.filter(c => c.type === 'SLOT'); if (slots.length === 0) return {{ error: 'No slots found in instance' }}; if (slots.length === 1) node = slots[0]; else return {{ error: 'Multiple slots found' }}; }} else return {{ error: 'Node is not a slot' }}; }}\nconst beforeCount = node.children.length; node.resetSlot(); return {{ success: true, slotName: node.name, beforeCount, afterCount: node.children.length }};"
+    ))
+}
+
+pub fn slot_convert(node_id: Option<&str>, name: &str) -> String {
+    let lookup = match node_id {
+        Some(id) => format!("let frame = await figma.getNodeByIdAsync({});", js_string(id)),
+        None => "const sel = figma.currentPage.selection; if (sel.length === 0) return { error: 'No frame selected' }; let frame = sel[0];".to_string(),
+    };
+    wrap_async(&format!(
+        "{lookup}\nif (frame.type !== 'FRAME') return {{ error: 'Node is not a frame' }};\nlet parent = frame.parent, component = null;\nwhile (parent) {{ if (parent.type === 'COMPONENT' || parent.type === 'COMPONENT_SET') {{ component = parent; break; }} parent = parent.parent; }}\nif (!component) return {{ error: 'Frame is not inside a component' }};\nconst fp = {{ x: frame.x, y: frame.y, width: frame.width, height: frame.height, layoutMode: frame.layoutMode, itemSpacing: frame.itemSpacing, paddingTop: frame.paddingTop, paddingBottom: frame.paddingBottom, paddingLeft: frame.paddingLeft, paddingRight: frame.paddingRight, fills: frame.fills, children: [...frame.children] }};\nconst slot = component.createSlot({name});\nslot.layoutMode = fp.layoutMode; slot.itemSpacing = fp.itemSpacing; slot.paddingTop = fp.paddingTop; slot.paddingBottom = fp.paddingBottom; slot.paddingLeft = fp.paddingLeft; slot.paddingRight = fp.paddingRight; slot.fills = fp.fills; slot.resize(fp.width, fp.height); slot.x = fp.x; slot.y = fp.y;\nfp.children.forEach(c => slot.appendChild(c));\nframe.remove();\nreturn {{ success: true, slotId: slot.id, slotName: slot.name, componentName: component.name }};",
+        name = js_string(name)
+    ))
+}
+
+// --------------------------------------------------------------------------
+// variants / prop combine
+// --------------------------------------------------------------------------
+
+pub fn variants_from(ids: &[String], property: &str, values: &[String], set_name: &str) -> String {
+    let ids_j = serde_json::to_string(ids).unwrap_or_else(|_| "[]".into());
+    let vals_j = serde_json::to_string(values).unwrap_or_else(|_| "[]".into());
+    wrap_async(&format!(
+        "const ids = {ids_j};\nconst values = {vals_j};\nconst property = {property};\nconst setNameArg = {set_name};\nconst components = []; const promoted = []; let baseName = setNameArg;\nfor (let i = 0; i < ids.length; i++) {{\n  const node = await figma.getNodeByIdAsync(ids[i]);\n  if (!node) return {{ error: 'Node not found: ' + ids[i] }};\n  let comp;\n  if (node.type === 'COMPONENT') {{ if (node.parent && node.parent.type === 'COMPONENT_SET') return {{ error: 'Node ' + ids[i] + ' is already a variant' }}; comp = node; }}\n  else if (node.type === 'FRAME' || node.type === 'GROUP') {{ comp = figma.createComponentFromNode(node); promoted.push(ids[i]); }}\n  else return {{ error: 'Unsupported type for ' + ids[i] + ': ' + node.type }};\n  if (!baseName) {{ let n = (comp.name || 'Component'); n = n.replace(/\\s*,\\s*[^,=]+=[^,]+(?:,\\s*[^,=]+=[^,]+)*\\s*$/, ''); n = n.replace(/\\s*\\/.*$/, ''); baseName = n.trim() || 'Component'; }}\n  components.push({{ comp, value: values[i] }});\n}}\nfor (const {{ comp, value }} of components) comp.name = property + '=' + value;\nconst page = figma.currentPage;\nfor (const {{ comp }} of components) if (comp.parent !== page) page.appendChild(comp);\nlet set;\ntry {{ set = figma.combineAsVariants(components.map(c => c.comp), page); }} catch (err) {{ return {{ error: 'combineAsVariants failed: ' + (err && err.message ? err.message : String(err)) }}; }}\nset.name = baseName;\nfigma.currentPage.selection = [set]; figma.viewport.scrollAndZoomIntoView([set]);\nreturn {{ id: set.id, name: set.name, property, values, promotedCount: promoted.length, count: components.length, variantIds: components.map(c => c.comp.id) }};",
+        property = js_string(property), set_name = js_string(set_name)
+    ))
+}
+
+pub fn prop_combine(ids: &[String], name: &str) -> String {
+    let ids_j = serde_json::to_string(ids).unwrap_or_else(|_| "[]".into());
+    wrap_async(&format!(
+        "const components = [];\nfor (const id of {ids_j}) {{ const n = await figma.getNodeByIdAsync(id); if (!n) throw new Error('Node not found: ' + id); if (n.type !== 'COMPONENT') throw new Error('Not a component: ' + id + ' (type=' + n.type + ')'); components.push(n); }}\nconst set = figma.combineAsVariants(components, figma.currentPage);\nset.name = {name};\nreturn {{ id: set.id, name: set.name, count: components.length }};",
+        name = js_string(name)
+    ))
+}
+
+// --------------------------------------------------------------------------
 // analyze / lint (param-free IIFEs, ported verbatim from analyze.js)
 // --------------------------------------------------------------------------
 

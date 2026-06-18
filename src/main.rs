@@ -191,6 +191,7 @@ async fn run(cli: Cli) -> Result<()> {
             };
             lifecycle::ensure_started().await?;
             let v = transport::exec(req).await?;
+            save_last_render(&v);
             print_result(&v, json);
             Ok(())
         }
@@ -207,6 +208,7 @@ async fn run(cli: Cli) -> Result<()> {
             };
             lifecycle::ensure_started().await?;
             let v = transport::exec(req).await?;
+            save_last_render(&v);
             print_result(&v, json);
             Ok(())
         }
@@ -236,7 +238,189 @@ async fn run(cli: Cli) -> Result<()> {
             }
         },
         Commands::Verify { node_id, save, measure } => cmd_verify(node_id, save, measure, json).await,
+        Commands::Node { action } => cmd_node(action, json).await,
+        Commands::Unwrap { node_id, keep_wrapper } => cmd_unwrap(node_id, keep_wrapper, json).await,
+        Commands::Undo => cmd_undo(json).await,
+        Commands::Var { action } => cmd_var(action, json).await,
+        Commands::Export { format, node_id, output, scale } => cmd_export(format, node_id, output, scale, json).await,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: node ops, undo, variables, export
+// ---------------------------------------------------------------------------
+
+fn last_render_file() -> std::path::PathBuf {
+    config::config_dir().join("last-render.json")
+}
+
+/// Recursively collect Figma node ids (strings matching N:M) under "id" keys.
+fn collect_node_ids(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(map) => {
+            if let Some(Value::String(id)) = map.get("id") {
+                if id.split_once(':').is_some_and(|(a, b)| !a.is_empty() && !b.is_empty()) {
+                    out.push(id.clone());
+                }
+            }
+            for (_, val) in map {
+                collect_node_ids(val, out);
+            }
+        }
+        Value::Array(arr) => arr.iter().for_each(|x| collect_node_ids(x, out)),
+        _ => {}
+    }
+}
+
+/// Persist ids created by a render so `undo` can remove them.
+fn save_last_render(result: &Value) {
+    let mut ids = Vec::new();
+    collect_node_ids(result, &mut ids);
+    if ids.is_empty() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(config::config_dir());
+    let _ = std::fs::write(last_render_file(), serde_json::json!({ "ids": ids }).to_string());
+}
+
+async fn cmd_node(action: NodeAction, json: bool) -> Result<()> {
+    match action {
+        NodeAction::ToComponent { node_ids } => {
+            let ids = serde_json::to_string(&node_ids)?;
+            let code = format!(
+                "return (async () => {{ const ids = {ids}; const out = []; for (const id of ids) {{ const n = await figma.getNodeByIdAsync(id); if (n && (n.type==='FRAME'||n.type==='GROUP')) {{ const c = figma.createComponentFromNode(n); out.push({{id:c.id,name:c.name}}); }} }} return out; }})()"
+            );
+            let v = exec_eval(&code).await?;
+            print_result(&v, json);
+            Ok(())
+        }
+        NodeAction::Delete { node_ids } => {
+            let ids = serde_json::to_string(&node_ids)?;
+            let code = format!(
+                "return (async () => {{ const ids = {ids}; let deleted = 0; for (const id of ids) {{ const n = await figma.getNodeByIdAsync(id); if (n) {{ n.remove(); deleted++; }} }} return {{ deleted }}; }})()"
+            );
+            let v = exec_eval(&code).await?;
+            print_result(&v, json);
+            Ok(())
+        }
+    }
+}
+
+async fn cmd_unwrap(node_id: String, keep_wrapper: bool, json: bool) -> Result<()> {
+    let id = js_string(&node_id);
+    let code = format!(
+        r#"return (async () => {{
+  const n = await figma.getNodeByIdAsync({id});
+  if (!n) throw new Error('Node not found: ' + {id});
+  if (!('children' in n) || !Array.isArray(n.children)) return 'Node ' + n.id + ' has no children to unwrap';
+  const parent = n.parent;
+  if (!parent) throw new Error('Wrapper has no parent');
+  const isOnPage = parent.type === 'PAGE';
+  const offX = isOnPage ? n.x : 0, offY = isOnPage ? n.y : 0;
+  const moved = [];
+  for (const c of n.children.slice()) {{
+    const cx = c.x, cy = c.y;
+    parent.appendChild(c);
+    if (isOnPage && 'x' in c) {{ c.x = offX + cx; c.y = offY + cy; }}
+    moved.push(c.id);
+  }}
+  const wid = n.id, wname = n.name;
+  if (!{keep_wrapper}) n.remove();
+  return {{ unwrapped: wid, name: wname, children: moved, deletedWrapper: !{keep_wrapper} }};
+}})()"#
+    );
+    let v = exec_eval(&code).await?;
+    print_result(&v, json);
+    Ok(())
+}
+
+async fn cmd_undo(json: bool) -> Result<()> {
+    let path = last_render_file();
+    let state: Value = match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or(Value::Null),
+        Err(_) => {
+            if json { print_result(&serde_json::json!({ "removed": 0 }), true); } else { println!("Nothing to undo."); }
+            return Ok(());
+        }
+    };
+    let ids = state.get("ids").cloned().unwrap_or(Value::Array(vec![]));
+    let code = format!(
+        "return (async () => {{ let removed = 0; const names = []; for (const id of {ids}) {{ const n = await figma.getNodeByIdAsync(id); if (n && !n.removed) {{ names.push(n.name); n.remove(); removed++; }} }} return {{ removed, names }}; }})()"
+    );
+    let v = exec_eval(&code).await?;
+    let _ = std::fs::remove_file(&path);
+    print_result(&v, json);
+    Ok(())
+}
+
+async fn cmd_var(action: VarAction, json: bool) -> Result<()> {
+    match action {
+        VarAction::List => {
+            let code = r#"return (async () => {
+  const cols = await figma.variables.getLocalVariableCollectionsAsync();
+  const vars = await figma.variables.getLocalVariablesAsync();
+  return cols.map(c => ({
+    collection: c.name,
+    modes: c.modes.map(m => m.name),
+    variables: vars.filter(v => v.variableCollectionId === c.id).map(v => ({ name: v.name, type: v.resolvedType }))
+  }));
+})()"#.to_string();
+            let v = exec_eval(&code).await?;
+            print_result(&v, json);
+            Ok(())
+        }
+        VarAction::DeleteAll { collection } => {
+            let filter = match &collection {
+                Some(name) => format!("cols = cols.filter(c => c.name.includes({}));", js_string(name)),
+                None => String::new(),
+            };
+            let code = format!(
+                "return (async () => {{ let cols = await figma.variables.getLocalVariableCollectionsAsync(); {filter} let deleted = 0; for (const col of cols) {{ const vars = await figma.variables.getLocalVariablesAsync(); for (const v of vars.filter(v => v.variableCollectionId === col.id)) {{ v.remove(); deleted++; }} col.remove(); }} return {{ deletedVariables: deleted, deletedCollections: cols.length }}; }})()"
+            );
+            let v = exec_eval(&code).await?;
+            print_result(&v, json);
+            Ok(())
+        }
+    }
+}
+
+async fn cmd_export(format: String, node_id: Option<String>, output: Option<String>, scale: f64, json: bool) -> Result<()> {
+    let fmt = format.to_uppercase();
+    let node_lookup = match &node_id {
+        Some(id) => format!("node = await figma.getNodeByIdAsync({});", js_string(id)),
+        None => "const sel = figma.currentPage.selection; node = sel.length > 0 ? sel[0] : null;".to_string(),
+    };
+    let settings = if fmt == "PNG" || fmt == "JPG" {
+        format!("{{ format: {}, constraint: {{ type: 'SCALE', value: {scale} }} }}", js_string(&fmt))
+    } else {
+        format!("{{ format: {} }}", js_string(&fmt))
+    };
+    let code = format!(
+        r#"return (async () => {{
+  let node;
+  {node_lookup}
+  if (!node) return {{ error: 'No node selected or found' }};
+  if (!('exportAsync' in node)) return {{ error: 'Node cannot be exported' }};
+  const bytes = await node.exportAsync({settings});
+  return {{ id: node.id, name: node.name, base64: figma.base64Encode(bytes) }};
+}})()"#
+    );
+    let v = exec_eval(&code).await?;
+    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        anyhow::bail!(err.to_string());
+    }
+    let b64 = v.get("base64").and_then(|b| b.as_str()).unwrap_or("");
+    let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("node").replace(':', "-");
+    let ext = format.to_lowercase();
+    let path = output.unwrap_or_else(|| format!("./export-{id}.{ext}"));
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| anyhow::anyhow!("decode export: {e}"))?;
+    std::fs::write(&path, &bytes)?;
+    let out = serde_json::json!({ "id": v.get("id"), "name": v.get("name"), "saved": path, "bytes": bytes.len() });
+    if json { print_result(&out, true); } else { println!("✓ exported {} ({} bytes)", path, bytes.len()); }
+    Ok(())
 }
 
 async fn cmd_verify(node_id: Option<String>, save: Option<String>, measure: bool, json: bool) -> Result<()> {

@@ -2,9 +2,11 @@
 //! bridge, no API key. This is the CLI shell + daemon; node creation runs as
 //! JS inside Figma through the plugin (see daemon.rs).
 
+mod cmds;
 mod config;
 mod daemon;
 mod engine;
+mod jsgen;
 mod lifecycle;
 mod transport;
 
@@ -105,6 +107,44 @@ enum Commands {
         #[command(subcommand)]
         action: VarAction,
     },
+    /// Create elements (frame, rect, ellipse, text, line, component, group, autolayout).
+    Create {
+        #[command(subcommand)]
+        action: CreateAction,
+    },
+    /// Set properties on the selection / a node / nodes matching a query.
+    Set {
+        #[command(subcommand)]
+        action: SetAction,
+    },
+    /// Control auto-layout sizing (hug / fill / fixed).
+    Sizing {
+        #[command(subcommand)]
+        action: SizingAction,
+    },
+    /// Bind a variable to a node property (fill/stroke/radius/gap/padding).
+    Bind {
+        #[command(subcommand)]
+        action: BindAction,
+    },
+    /// Select a node by id.
+    Select { node_id: String },
+    /// Delete a node by id, or the current selection.
+    Delete { node_id: Option<String> },
+    /// Duplicate a node by id, or the current selection.
+    Duplicate {
+        node_id: Option<String>,
+        #[arg(long, default_value_t = 20.0)]
+        offset: f64,
+    },
+    /// Print details of a node by id, or the current selection.
+    Get { node_id: Option<String> },
+    /// Set padding (CSS-style 1-4 values) on the selection.
+    Padding { value: f64, r: Option<f64>, b: Option<f64>, l: Option<f64> },
+    /// Set auto-layout gap on the selection.
+    Gap { value: f64 },
+    /// Align items: start, center, end, stretch.
+    Align { alignment: String },
     /// Export a node (or selection) to a file (png/svg/jpg/pdf).
     Export {
         /// Format: png, svg, jpg, pdf.
@@ -149,6 +189,50 @@ enum NodeAction {
     ToComponent { node_ids: Vec<String> },
     /// Delete node(s) by id.
     Delete { node_ids: Vec<String> },
+}
+
+#[derive(Subcommand)]
+enum CreateAction {
+    Frame { name: String, #[arg(short, long, default_value_t = 100.0)] width: f64, #[arg(short = 'H', long, default_value_t = 100.0)] height: f64, #[arg(short, long)] x: Option<f64>, #[arg(short, long, default_value_t = 0.0)] y: f64, #[arg(long)] fill: Option<String>, #[arg(long)] radius: Option<f64> },
+    #[command(alias = "rectangle")]
+    Rect { name: Option<String>, #[arg(short, long, default_value_t = 100.0)] width: f64, #[arg(short = 'H', long, default_value_t = 100.0)] height: f64, #[arg(short, long)] x: Option<f64>, #[arg(short, long, default_value_t = 0.0)] y: f64, #[arg(long)] fill: Option<String>, #[arg(long)] stroke: Option<String>, #[arg(long)] radius: Option<f64>, #[arg(long)] opacity: Option<f64> },
+    #[command(alias = "circle")]
+    Ellipse { name: Option<String>, #[arg(short, long, default_value_t = 100.0)] width: f64, #[arg(short = 'H', long)] height: Option<f64>, #[arg(short, long)] x: Option<f64>, #[arg(short, long, default_value_t = 0.0)] y: f64, #[arg(long)] fill: Option<String>, #[arg(long)] stroke: Option<String> },
+    Text { content: String, #[arg(short, long)] x: Option<f64>, #[arg(short, long, default_value_t = 0.0)] y: f64, #[arg(short, long, default_value_t = 16.0)] size: f64, #[arg(short, long, default_value = "#000000")] color: String, #[arg(short, long, default_value = "regular")] weight: String, #[arg(long, default_value = "Inter")] font: String, #[arg(long)] width: Option<f64>, #[arg(long, default_value_t = 100.0)] spacing: f64 },
+    Component { name: Option<String> },
+    Group { name: Option<String> },
+    #[command(alias = "al")]
+    Autolayout { name: Option<String>, #[arg(short, long, default_value = "row")] direction: String, #[arg(short, long, default_value_t = 8.0)] gap: f64, #[arg(short, long, default_value_t = 16.0)] padding: f64, #[arg(short, long)] x: Option<f64>, #[arg(short, long, default_value_t = 0.0)] y: f64, #[arg(long)] fill: Option<String>, #[arg(long)] radius: Option<f64>, #[arg(long, default_value_t = 100.0)] spacing: f64 },
+}
+
+#[derive(Subcommand)]
+enum SetAction {
+    Fill { color: String, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Stroke { color: String, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Radius { value: f64, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Size { width: f64, height: f64, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Scale { factor: f64, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String>, #[arg(long)] keep_spacing: bool },
+    #[command(alias = "position")]
+    Pos { x: f64, y: f64, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Opacity { value: f64, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Name { name: String, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Text { text: String, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+}
+
+#[derive(Subcommand)]
+enum SizingAction {
+    Hug { #[arg(short, long, default_value = "both")] axis: String },
+    Fill { #[arg(short, long, default_value = "both")] axis: String },
+    Fixed { width: f64, height: Option<f64> },
+}
+
+#[derive(Subcommand)]
+enum BindAction {
+    Fill { var_name: String, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Stroke { var_name: String, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Radius { var_name: String, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Gap { var_name: String, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String> },
+    Padding { var_name: String, #[arg(short, long)] node: Option<String>, #[arg(short, long)] query: Option<String>, #[arg(short, long, default_value = "all")] side: String },
 }
 
 #[derive(Subcommand)]
@@ -243,7 +327,88 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Undo => cmd_undo(json).await,
         Commands::Var { action } => cmd_var(action, json).await,
         Commands::Export { format, node_id, output, scale } => cmd_export(format, node_id, output, scale, json).await,
+        Commands::Create { action } => cmd_create(action, json).await,
+        Commands::Set { action } => cmd_set(action, json).await,
+        Commands::Sizing { action } => {
+            let code = match action {
+                SizingAction::Hug { axis } => cmds::sizing_hug(&axis),
+                SizingAction::Fill { axis } => cmds::sizing_fill(&axis),
+                SizingAction::Fixed { width, height } => cmds::sizing_fixed(width, height.unwrap_or(width)),
+            };
+            let v = exec_eval(&code).await?; print_result(&v, json); Ok(())
+        }
+        Commands::Bind { action } => cmd_bind(action, json).await,
+        Commands::Select { node_id } => { let v = exec_eval(&cmds::select(&node_id)).await?; print_result(&v, json); Ok(()) }
+        Commands::Delete { node_id } => { let v = exec_eval(&cmds::delete(node_id.as_deref())).await?; print_result(&v, json); Ok(()) }
+        Commands::Duplicate { node_id, offset } => { let v = exec_eval(&cmds::duplicate(node_id.as_deref(), offset)).await?; print_result(&v, json); Ok(()) }
+        Commands::Get { node_id } => { let v = exec_eval(&cmds::get(node_id.as_deref())).await?; print_result(&v, json); Ok(()) }
+        Commands::Padding { value, r, b, l } => {
+            // CSS-style 1-4 values.
+            let (t, ri, bo, le) = match (r, b, l) {
+                (None, _, _) => (value, value, value, value),
+                (Some(r), None, _) => (value, r, value, r),
+                (Some(r), Some(b), None) => (value, r, b, r),
+                (Some(r), Some(b), Some(l)) => (value, r, b, l),
+            };
+            let v = exec_eval(&cmds::set_padding(t, ri, bo, le)).await?; print_result(&v, json); Ok(())
+        }
+        Commands::Gap { value } => { let v = exec_eval(&cmds::set_gap(value)).await?; print_result(&v, json); Ok(()) }
+        Commands::Align { alignment } => { let v = exec_eval(&cmds::align(&alignment)).await?; print_result(&v, json); Ok(()) }
     }
+}
+
+async fn cmd_create(action: CreateAction, json: bool) -> Result<()> {
+    use cmds::*;
+    let code = match action {
+        CreateAction::Frame { name, width, height, x, y, fill, radius } =>
+            create_frame(&ShapeOpts { name: Some(name), width, height: Some(height), x, y, fill, stroke: None, radius, opacity: None }),
+        CreateAction::Rect { name, width, height, x, y, fill, stroke, radius, opacity } =>
+            create_rect(&ShapeOpts { name, width, height: Some(height), x, y, fill, stroke, radius, opacity }),
+        CreateAction::Ellipse { name, width, height, x, y, fill, stroke } =>
+            create_ellipse(&ShapeOpts { name, width, height, x, y, fill, stroke, radius: None, opacity: None }),
+        CreateAction::Text { content, x, y, size, color, weight, font, width, spacing } =>
+            create_text(&TextOpts { content, x, y, size, color, weight, font, width, spacing }),
+        CreateAction::Component { name } => create_component(name.as_deref()),
+        CreateAction::Group { name } => create_group(name.as_deref()),
+        CreateAction::Autolayout { name, direction, gap, padding, x, y, fill, radius, spacing } =>
+            create_autolayout(&AutoLayoutOpts { name, direction, gap, padding, x, y, fill, radius, spacing }),
+    };
+    let v = exec_eval(&code).await?;
+    save_last_render(&v);
+    print_result(&v, json);
+    Ok(())
+}
+
+async fn cmd_set(action: SetAction, json: bool) -> Result<()> {
+    use cmds::Sel;
+    let code = match action {
+        SetAction::Fill { color, node, query } => cmds::set_fill(&Sel { node, query }, &color),
+        SetAction::Stroke { color, node, query } => cmds::set_stroke(&Sel { node, query }, &color),
+        SetAction::Radius { value, node, query } => cmds::set_radius(&Sel { node, query }, value),
+        SetAction::Size { width, height, node, query } => cmds::set_size(&Sel { node, query }, width, height),
+        SetAction::Scale { factor, node, query, keep_spacing } => cmds::set_scale(&Sel { node, query }, factor, keep_spacing),
+        SetAction::Pos { x, y, node, query } => cmds::set_pos(&Sel { node, query }, x, y),
+        SetAction::Opacity { value, node, query } => cmds::set_opacity(&Sel { node, query }, value),
+        SetAction::Name { name, node, query } => cmds::set_name(&Sel { node, query }, &name),
+        SetAction::Text { text, node, query } => cmds::set_text(&Sel { node, query }, &text),
+    };
+    let v = exec_eval(&code).await?;
+    print_result(&v, json);
+    Ok(())
+}
+
+async fn cmd_bind(action: BindAction, json: bool) -> Result<()> {
+    use cmds::Sel;
+    let code = match action {
+        BindAction::Fill { var_name, node, query } => cmds::bind_fill(&Sel { node, query }, &var_name),
+        BindAction::Stroke { var_name, node, query } => cmds::bind_stroke(&Sel { node, query }, &var_name),
+        BindAction::Radius { var_name, node, query } => cmds::bind_prop(&Sel { node, query }, &var_name, "cornerRadius"),
+        BindAction::Gap { var_name, node, query } => cmds::bind_prop(&Sel { node, query }, &var_name, "itemSpacing"),
+        BindAction::Padding { var_name, node, query, side } => cmds::bind_padding(&Sel { node, query }, &var_name, &side),
+    };
+    let v = exec_eval(&code).await?;
+    print_result(&v, json);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

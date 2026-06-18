@@ -195,6 +195,8 @@ enum Commands {
         #[command(subcommand)]
         action: FigjamAction,
     },
+    /// Delete multiple nodes (comma-separated ids or JSON array).
+    DeleteBatch { node_ids: String },
     /// Export a node (or selection) to a file (png/svg/jpg/pdf).
     Export {
         /// Format: png, svg, jpg, pdf.
@@ -377,6 +379,16 @@ enum VarAction {
     },
     /// Find variables whose name contains a pattern.
     Find { pattern: String },
+    /// Create color swatches on the canvas for a collection.
+    Visualize { collection: Option<String> },
+    /// Create multiple variables from a JSON array.
+    CreateBatch { data: String, #[arg(short, long)] collection: String },
+    /// Bind variables to multiple nodes from a JSON array.
+    BindBatch { data: String },
+    /// Set properties on multiple nodes from a JSON array (hex or var: refs).
+    SetBatch { data: String, #[arg(short, long)] collection: Option<String> },
+    /// Rename multiple nodes from a JSON array or object.
+    RenameBatch { data: String },
 }
 
 #[tokio::main]
@@ -577,6 +589,13 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             };
             let v = exec_eval(&code).await?; print_result(&v, json); Ok(())
+        }
+        Commands::DeleteBatch { node_ids } => {
+            // Accept comma-separated ids or a JSON array.
+            let ids: Vec<String> = serde_json::from_str::<Vec<String>>(&node_ids)
+                .unwrap_or_else(|_| node_ids.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+            let v = exec_eval(&cmds::delete_batch(&serde_json::to_string(&ids).unwrap())).await?;
+            print_result(&v, json); Ok(())
         }
     }
 }
@@ -811,8 +830,54 @@ async fn cmd_var(action: VarAction, json: bool) -> Result<()> {
             print_result(&v, json);
             Ok(())
         }
+        VarAction::Visualize { collection } => {
+            let v = run_asset(VAR_VISUALIZE, serde_json::json!({ "collection": collection })).await?;
+            print_result(&v, json); Ok(())
+        }
+        VarAction::CreateBatch { data: arr, collection } => {
+            let parsed: Value = serde_json::from_str(&arr).map_err(|e| anyhow::anyhow!("invalid JSON: {e}"))?;
+            let v = exec_eval(&cmds::var_create_batch(&collection, &parsed.to_string())).await?;
+            print_result(&v, json); Ok(())
+        }
+        VarAction::BindBatch { data: arr } => {
+            let parsed: Value = serde_json::from_str(&arr).map_err(|e| anyhow::anyhow!("invalid JSON: {e}"))?;
+            let v = exec_eval(&cmds::bind_batch(&parsed.to_string())).await?;
+            print_result(&v, json); Ok(())
+        }
+        VarAction::SetBatch { data: arr, collection } => {
+            let parsed: Value = serde_json::from_str(&arr).map_err(|e| anyhow::anyhow!("invalid JSON: {e}"))?;
+            // Normalize id->nodeId, newName/label->name (LLMs reach for `id`).
+            let ops: Vec<Value> = parsed.as_array().cloned().unwrap_or_default().into_iter().map(|mut o| {
+                if let Some(map) = o.as_object_mut() {
+                    if !map.contains_key("nodeId") { if let Some(id) = map.get("id").cloned() { map.insert("nodeId".into(), id); } }
+                    if !map.contains_key("name") {
+                        if let Some(n) = map.get("newName").or_else(|| map.get("label")).cloned() { map.insert("name".into(), n); }
+                    }
+                }
+                o
+            }).collect();
+            let v = run_asset(SET_BATCH, serde_json::json!({ "operations": ops, "colFilter": collection })).await?;
+            print_result(&v, json); Ok(())
+        }
+        VarAction::RenameBatch { data: arr } => {
+            let parsed: Value = serde_json::from_str(&arr).map_err(|e| anyhow::anyhow!("invalid JSON: {e}"))?;
+            // Accept array [{id|nodeId, name|newName}] or object {id: name}.
+            let pairs: Vec<Value> = match &parsed {
+                Value::Array(a) => a.iter().map(|r| serde_json::json!({
+                    "id": r.get("id").or_else(|| r.get("nodeId")),
+                    "name": r.get("name").or_else(|| r.get("newName")),
+                })).collect(),
+                Value::Object(m) => m.iter().map(|(id, name)| serde_json::json!({ "id": id, "name": name })).collect(),
+                _ => vec![],
+            };
+            let v = exec_eval(&cmds::rename_batch(&Value::Array(pairs).to_string())).await?;
+            print_result(&v, json); Ok(())
+        }
     }
 }
+
+const VAR_VISUALIZE: &str = include_str!("../assets/cmd/var_visualize.js");
+const SET_BATCH: &str = include_str!("../assets/cmd/set_batch.js");
 
 const TOKENS_SPACING: &str = include_str!("../assets/cmd/tokens_spacing.js");
 const TOKENS_RADII: &str = include_str!("../assets/cmd/tokens_radii.js");

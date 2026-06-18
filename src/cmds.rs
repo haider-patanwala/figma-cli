@@ -413,6 +413,31 @@ pub fn var_create(name: &str, collection: &str, vtype: &str, value: Option<&str>
     ))
 }
 
+pub fn var_create_batch(collection: &str, vars_json: &str) -> String {
+    wrap_async(&format!(
+        "const vars = {vars_json};\nconst cols = await figma.variables.getLocalVariableCollectionsAsync();\nlet col = cols.find(c => c.id === {c} || c.name === {c});\nif (!col) return 'Collection not found: ' + {c};\nconst modeId = col.modes[0].modeId;\nfunction hexToRgb(hex) {{ const r = /^#?([a-f\\d]{{2}})([a-f\\d]{{2}})([a-f\\d]{{2}})$/i.exec(hex); return r ? {{ r: parseInt(r[1],16)/255, g: parseInt(r[2],16)/255, b: parseInt(r[3],16)/255 }} : null; }}\nlet created = 0;\nfor (const v of vars) {{ const type = (v.type || 'COLOR').toUpperCase(); const variable = figma.variables.createVariable(v.name, col, type); if (v.value !== undefined) {{ let fv = v.value; if (type === 'COLOR') fv = hexToRgb(v.value); else if (type === 'FLOAT') fv = parseFloat(v.value); else if (type === 'BOOLEAN') fv = v.value === true || v.value === 'true'; variable.setValueForMode(modeId, fv); }} created++; }}\nreturn 'Created ' + created + ' variables';",
+        c = js_string(collection)
+    ))
+}
+
+pub fn delete_batch(ids_json: &str) -> String {
+    wrap_async(&format!(
+        "const ids = {ids_json};\nlet deleted = 0;\nfor (const id of ids) {{ const n = await figma.getNodeByIdAsync(id); if (n) {{ n.remove(); deleted++; }} }}\nreturn 'Deleted ' + deleted + ' nodes';"
+    ))
+}
+
+pub fn bind_batch(bindings_json: &str) -> String {
+    wrap_async(&format!(
+        "const bindings = {bindings_json};\nconst vars = await figma.variables.getLocalVariablesAsync();\nlet bound = 0;\nfor (const b of bindings) {{\n  const node = await figma.getNodeByIdAsync(b.nodeId);\n  if (!node) continue;\n  const variable = vars.find(v => v.name === b.variable || v.name.endsWith('/' + b.variable));\n  if (!variable) continue;\n  const prop = b.property.toLowerCase();\n  if (prop === 'fill' && 'fills' in node && node.fills.length > 0) {{ node.fills = [figma.variables.setBoundVariableForPaint(node.fills[0], 'color', variable)]; bound++; }}\n  else if (prop === 'stroke' && 'strokes' in node && node.strokes.length > 0) {{ node.strokes = [figma.variables.setBoundVariableForPaint(node.strokes[0], 'color', variable)]; bound++; }}\n  else if (prop === 'radius' && 'cornerRadius' in node) {{ node.setBoundVariable('cornerRadius', variable); bound++; }}\n  else if (prop === 'gap' && 'itemSpacing' in node) {{ node.setBoundVariable('itemSpacing', variable); bound++; }}\n  else if (prop === 'padding' && 'paddingTop' in node) {{ node.setBoundVariable('paddingTop', variable); node.setBoundVariable('paddingBottom', variable); node.setBoundVariable('paddingLeft', variable); node.setBoundVariable('paddingRight', variable); bound++; }}\n}}\nreturn 'Bound ' + bound + ' properties';"
+    ))
+}
+
+pub fn rename_batch(pairs_json: &str) -> String {
+    wrap_async(&format!(
+        "const pairs = {pairs_json};\nlet renamed = 0;\nconst notFound = [];\nfor (const p of pairs) {{ const node = await figma.getNodeByIdAsync(p.id); if (node) {{ node.name = p.name; renamed++; }} else notFound.push(p.id); }}\nreturn {{ renamed, notFound }};"
+    ))
+}
+
 pub fn var_find(pattern: &str) -> String {
     wrap_async(&format!(
         "const vars = await figma.variables.getLocalVariablesAsync();\nconst p = {p}.toLowerCase();\nreturn vars.filter(v => v.name.toLowerCase().includes(p)).map(v => ({{ name: v.name, type: v.resolvedType }}));",

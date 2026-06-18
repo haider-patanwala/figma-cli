@@ -8,6 +8,7 @@ mod daemon;
 mod engine;
 mod jsgen;
 mod lifecycle;
+mod passthrough;
 mod tools;
 mod transport;
 
@@ -222,6 +223,57 @@ enum Commands {
         #[arg(long, default_value_t = 2.0)]
         scale: f64,
     },
+    /// Export the open file as a DESIGN.md (Node fallback). [output] [--pages …] [--sections …] [--selection]
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Extract { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Import tokens/DESIGN.md/tailwind.config/css/storybook into variables (Node fallback).
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Import { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Show a component's spec from a DESIGN.md (Node fallback). <component> [--check <id>]
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Spec { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Instance a component from an extracted system (Node fallback). <name>
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Instantiate { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Pre-built UI blocks (Node fallback). `blocks list` | `blocks create <id>`
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Blocks { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Recreate a webpage in Figma (Node fallback). <url>
+    #[command(name = "recreate-url", trailing_var_arg = true, disable_help_flag = true)]
+    RecreateUrl { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Screenshot a webpage into Figma (Node fallback). <url>
+    #[command(name = "screenshot-url", trailing_var_arg = true, disable_help_flag = true)]
+    ScreenshotUrl { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Remove a node's background via remove.bg (Node fallback). [nodeId]
+    #[command(name = "remove-bg", trailing_var_arg = true, disable_help_flag = true)]
+    RemoveBg { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Dev resource links on nodes (Node fallback). link|list|unlink|edit …
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Dev { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Sections (Node fallback). create|list|add …
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Section { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Layout grids (Node fallback). set|list|clear …
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Grid { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Annotations on nodes (Node fallback). add|list|clear …
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Annotate { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Bundled plugins (Node fallback). list|install|setup …
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Plugins { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Figma Plugin API docs (Node fallback). [name]
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Api { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Generate size variants (Node fallback). [nodeId] …
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Sizes { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Show all variant combinations (Node fallback). [nodeId]
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Combos { #[arg(allow_hyphen_values = true)] args: Vec<String> },
+    /// Escape hatch: forward any args to the original Node CLI (advanced).
+    #[command(trailing_var_arg = true, disable_help_flag = true)]
+    Js { #[arg(allow_hyphen_values = true)] args: Vec<String> },
     /// Hidden: run the daemon in the foreground (used internally).
     #[command(hide = true, name = "daemon-run")]
     DaemonRun,
@@ -647,7 +699,40 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Gradient { action } => cmd_gradient(action, json).await,
         Commands::Shadcn { action } => cmd_shadcn(action, json).await,
+        Commands::Extract { args } => passthrough_cmd("extract", args).await,
+        Commands::Import { args } => passthrough_cmd("import", args).await,
+        Commands::Spec { args } => passthrough_cmd("spec", args).await,
+        Commands::Instantiate { args } => passthrough_cmd("instantiate", args).await,
+        Commands::Blocks { args } => passthrough_cmd("blocks", args).await,
+        Commands::RecreateUrl { args } => passthrough_cmd("recreate-url", args).await,
+        Commands::ScreenshotUrl { args } => passthrough_cmd("screenshot-url", args).await,
+        Commands::RemoveBg { args } => passthrough_cmd("remove-bg", args).await,
+        Commands::Dev { args } => passthrough_cmd("dev", args).await,
+        Commands::Section { args } => passthrough_cmd("section", args).await,
+        Commands::Grid { args } => passthrough_cmd("grid", args).await,
+        Commands::Annotate { args } => passthrough_cmd("annotate", args).await,
+        Commands::Plugins { args } => passthrough_cmd("plugins", args).await,
+        Commands::Api { args } => passthrough_cmd("api", args).await,
+        Commands::Sizes { args } => passthrough_cmd("sizes", args).await,
+        Commands::Combos { args } => passthrough_cmd("combos", args).await,
+        Commands::Js { args } => {
+            // Raw forward: caller supplies the full Node CLI argument list.
+            let code = passthrough::run(&args)?;
+            if code != 0 { std::process::exit(code); }
+            Ok(())
+        }
     }
+}
+
+/// Ensure the daemon is up (so the Node CLI drives the same daemon + plugin),
+/// then forward `<name> <args…>` to the Node fallback.
+async fn passthrough_cmd(name: &str, args: Vec<String>) -> Result<()> {
+    let _ = lifecycle::ensure_started().await;
+    let mut full = vec![name.to_string()];
+    full.extend(args);
+    let code = passthrough::run(&full)?;
+    if code != 0 { std::process::exit(code); }
+    Ok(())
 }
 
 async fn cmd_shadcn(action: ShadcnAction, json: bool) -> Result<()> {

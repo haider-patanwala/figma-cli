@@ -1,0 +1,29 @@
+[package]
+name = "figma-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Control Figma Desktop from the CLI via a plugin bridge — no API key. Rust port (Safe Mode)."
+license = "MIT"
+
+[[bin]]
+name = "figma-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "io-util", "time", "sync", "net"] }
+axum = { version = "0.7", features = ["ws"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+anyhow = "1"
+dirs = "5"
+rand = "0.8"
+futures-util = "0.3"
+rquickjs = { version = "0.6", features = ["bindgen"] }
+base64 = "0.22"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

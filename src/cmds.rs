@@ -341,6 +341,97 @@ pub fn duplicate(node_id: Option<&str>, offset: f64) -> String {
         None => wrap_async(&format!("const sel = figma.currentPage.selection; if (sel.length === 0) return 'No selection'; const clones = sel.map(n => {{ const c = n.clone(); c.x += {offset}; c.y += {offset}; return c; }}); figma.currentPage.selection = clones; return 'Duplicated ' + clones.length + ' element(s)';")),
     }
 }
+// --------------------------------------------------------------------------
+// analyze / lint (param-free IIFEs, ported verbatim from analyze.js)
+// --------------------------------------------------------------------------
+
+pub fn lint() -> &'static str {
+    r#"(async () => {
+  const issues = [];
+  function checkNode(node) {
+    if (node.name.startsWith('Frame') || node.name.startsWith('Rectangle') || node.name.startsWith('Group')) issues.push({ type: 'naming', severity: 'warning', node: node.id, name: node.name, message: 'Generic name, consider renaming' });
+    if (node.fills && Array.isArray(node.fills)) { const hasFillBinding = node.boundVariables && node.boundVariables.fills; if (!hasFillBinding && node.fills.some(f => f.type === 'SOLID')) issues.push({ type: 'color', severity: 'info', node: node.id, name: node.name, message: 'Hardcoded fill color' }); }
+    if (node.type === 'TEXT' && !node.textStyleId) issues.push({ type: 'typography', severity: 'info', node: node.id, name: node.name, message: 'Text without style' });
+    if (node.type === 'TEXT' && node.fontSize < 12) issues.push({ type: 'accessibility', severity: 'warning', node: node.id, name: node.name, message: 'Text size < 12px may be hard to read' });
+    if ('children' in node) node.children.forEach(c => checkNode(c));
+  }
+  figma.currentPage.children.forEach(c => checkNode(c));
+  return { total: issues.length, issues: issues.slice(0, 50) };
+})()"#
+}
+
+pub fn analyze_colors() -> &'static str {
+    r#"(async () => {
+  const colors = new Map();
+  function rgbToHex(r, g, b) { return '#' + [r, g, b].map(x => Math.round(x * 255).toString(16).padStart(2, '0')).join(''); }
+  function checkNode(node) {
+    if (node.fills && Array.isArray(node.fills)) node.fills.forEach(f => { if (f.type === 'SOLID' && f.color) { const hex = rgbToHex(f.color.r, f.color.g, f.color.b); colors.set(hex, (colors.get(hex) || 0) + 1); } });
+    if ('children' in node) node.children.forEach(c => checkNode(c));
+  }
+  figma.currentPage.children.forEach(c => checkNode(c));
+  return Array.from(colors.entries()).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([hex, count]) => ({ hex, count }));
+})()"#
+}
+
+pub fn analyze_typography() -> &'static str {
+    r#"(async () => {
+  const styles = new Map();
+  function checkNode(node) {
+    if (node.type === 'TEXT') { const key = node.fontName.family + '/' + node.fontSize + '/' + node.fontName.style; styles.set(key, (styles.get(key) || 0) + 1); }
+    if ('children' in node) node.children.forEach(c => checkNode(c));
+  }
+  figma.currentPage.children.forEach(c => checkNode(c));
+  return Array.from(styles.entries()).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([key, count]) => { const [family, size, style] = key.split('/'); return { family, size: parseInt(size), style, count }; });
+})()"#
+}
+
+pub fn analyze_spacing() -> &'static str {
+    r#"(async () => {
+  const gaps = new Map(), paddings = new Map();
+  function checkNode(node) {
+    if (node.layoutMode && node.layoutMode !== 'NONE') {
+      if (node.itemSpacing !== undefined) gaps.set(node.itemSpacing, (gaps.get(node.itemSpacing) || 0) + 1);
+      [node.paddingTop, node.paddingRight, node.paddingBottom, node.paddingLeft].filter(x => x > 0).forEach(v => paddings.set(v, (paddings.get(v) || 0) + 1));
+    }
+    if ('children' in node) node.children.forEach(c => checkNode(c));
+  }
+  figma.currentPage.children.forEach(c => checkNode(c));
+  return { gaps: Array.from(gaps.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([v, c]) => ({ value: v, count: c })), paddings: Array.from(paddings.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([v, c]) => ({ value: v, count: c })) };
+})()"#
+}
+
+pub fn analyze_clusters() -> &'static str {
+    r#"(async () => {
+  const patterns = new Map();
+  function getSignature(node) { if (node.type === 'FRAME' || node.type === 'GROUP') { const ct = ('children' in node) ? node.children.map(c => c.type).sort().join(',') : ''; return node.type + ':' + ct; } return node.type; }
+  function checkNode(node) { if (node.type === 'FRAME' || node.type === 'GROUP') { const sig = getSignature(node); if (!patterns.has(sig)) patterns.set(sig, []); patterns.get(sig).push({ id: node.id, name: node.name }); } if ('children' in node) node.children.forEach(c => checkNode(c)); }
+  figma.currentPage.children.forEach(c => checkNode(c));
+  return Array.from(patterns.entries()).filter(([_, nodes]) => nodes.length >= 2).sort((a, b) => b[1].length - a[1].length).slice(0, 10).map(([sig, nodes]) => ({ pattern: sig, count: nodes.length, examples: nodes.slice(0, 3) }));
+})()"#
+}
+
+pub fn node_tree(node_id: Option<&str>, depth: u32) -> String {
+    let target = match node_id {
+        Some(id) => format!("await figma.getNodeByIdAsync({})", js_string(id)),
+        None => "figma.currentPage".to_string(),
+    };
+    let body = format!(
+        "const maxDepth = {depth};\nconst root = {target};\nif (!root) return 'Node not found';\nconst lines = [];\nfunction printNode(node, indent = 0, d = 0) {{ if (d > maxDepth) return; const prefix = '  '.repeat(indent); const size = node.width && node.height ? ' (' + Math.round(node.width) + 'x' + Math.round(node.height) + ')' : ''; lines.push(prefix + node.type + ': ' + node.name + size); if ('children' in node && d < maxDepth) node.children.forEach(c => printNode(c, indent + 1, d + 1)); }}\nprintNode(root);\nreturn lines.join('\\n');"
+    );
+    wrap_async(&body)
+}
+
+pub fn node_bindings(node_id: Option<&str>) -> String {
+    let nodes = match node_id {
+        Some(id) => format!("[await figma.getNodeByIdAsync({})]", js_string(id)),
+        None => "figma.currentPage.selection".to_string(),
+    };
+    let body = format!(
+        "const nodes = {nodes};\nif (!nodes.length) return 'No node selected';\nconst results = [];\nfor (const node of nodes) {{ if (!node) continue; const bindings = {{}}; if (node.boundVariables) {{ for (const [prop, binding] of Object.entries(node.boundVariables)) {{ const b = Array.isArray(binding) ? binding[0] : binding; if (b && b.id) {{ const v = await figma.variables.getVariableByIdAsync(b.id); bindings[prop] = v ? v.name : b.id; }} }} }} results.push({{ id: node.id, name: node.name, bindings }}); }}\nreturn results;"
+    );
+    wrap_async(&body)
+}
+
 pub fn get(node_id: Option<&str>) -> String {
     let lookup = match node_id {
         Some(id) => format!("const n = await figma.getNodeByIdAsync({});", js_string(id)),

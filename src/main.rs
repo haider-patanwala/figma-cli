@@ -145,6 +145,26 @@ enum Commands {
     Gap { value: f64 },
     /// Align items: start, center, end, stretch.
     Align { alignment: String },
+    /// Accessibility checks.
+    A11y {
+        #[command(subcommand)]
+        action: A11yAction,
+    },
+    /// Inspect nodes (tree, bindings).
+    NodeTree {
+        node_id: Option<String>,
+        #[arg(short, long, default_value_t = 3)]
+        depth: u32,
+    },
+    /// Show a node's variable bindings.
+    NodeBindings { node_id: Option<String> },
+    /// Lint the design for issues (naming, hardcoded colors, tiny text).
+    Lint,
+    /// Analyze the design (colors, typography, spacing, clusters).
+    Analyze {
+        #[command(subcommand)]
+        action: AnalyzeAction,
+    },
     /// Export a node (or selection) to a file (png/svg/jpg/pdf).
     Export {
         /// Format: png, svg, jpg, pdf.
@@ -189,6 +209,23 @@ enum NodeAction {
     ToComponent { node_ids: Vec<String> },
     /// Delete node(s) by id.
     Delete { node_ids: Vec<String> },
+}
+
+#[derive(Subcommand)]
+enum AnalyzeAction {
+    Colors,
+    #[command(alias = "type")]
+    Typography,
+    Spacing,
+    Clusters,
+}
+
+#[derive(Subcommand)]
+enum A11yAction {
+    Contrast { node_id: Option<String>, #[arg(long, default_value = "AA")] level: String },
+    Touch { node_id: Option<String>, #[arg(long, default_value_t = 44)] min: u32 },
+    Text { node_id: Option<String> },
+    Audit { node_id: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -354,6 +391,49 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Gap { value } => { let v = exec_eval(&cmds::set_gap(value)).await?; print_result(&v, json); Ok(()) }
         Commands::Align { alignment } => { let v = exec_eval(&cmds::align(&alignment)).await?; print_result(&v, json); Ok(()) }
+        Commands::A11y { action } => cmd_a11y(action, json).await,
+        Commands::NodeTree { node_id, depth } => { let v = exec_eval(&cmds::node_tree(node_id.as_deref(), depth)).await?; print_result(&v, json); Ok(()) }
+        Commands::NodeBindings { node_id } => { let v = exec_eval(&cmds::node_bindings(node_id.as_deref())).await?; print_result(&v, json); Ok(()) }
+        Commands::Lint => { let v = exec_eval(cmds::lint()).await?; print_result(&v, json); Ok(()) }
+        Commands::Analyze { action } => {
+            let code = match action {
+                AnalyzeAction::Colors => cmds::analyze_colors(),
+                AnalyzeAction::Typography => cmds::analyze_typography(),
+                AnalyzeAction::Spacing => cmds::analyze_spacing(),
+                AnalyzeAction::Clusters => cmds::analyze_clusters(),
+            };
+            let v = exec_eval(code).await?; print_result(&v, json); Ok(())
+        }
+    }
+}
+
+const A11Y_CONTRAST: &str = include_str!("../assets/cmd/a11y_contrast.js");
+const A11Y_TOUCH: &str = include_str!("../assets/cmd/a11y_touch.js");
+const A11Y_TEXT: &str = include_str!("../assets/cmd/a11y_text.js");
+
+async fn cmd_a11y(action: A11yAction, json: bool) -> Result<()> {
+    match action {
+        A11yAction::Contrast { node_id, level } => {
+            let v = run_asset(A11Y_CONTRAST, serde_json::json!({ "nodeId": node_id, "level": level.to_uppercase() })).await?;
+            print_result(&v, json); Ok(())
+        }
+        A11yAction::Touch { node_id, min } => {
+            let v = run_asset(A11Y_TOUCH, serde_json::json!({ "nodeId": node_id, "minSize": min })).await?;
+            print_result(&v, json); Ok(())
+        }
+        A11yAction::Text { node_id } => {
+            let v = run_asset(A11Y_TEXT, serde_json::json!({ "nodeId": node_id })).await?;
+            print_result(&v, json); Ok(())
+        }
+        A11yAction::Audit { node_id } => {
+            // Run all three checks and aggregate.
+            let args = serde_json::json!({ "nodeId": node_id, "level": "AA", "minSize": 44 });
+            let contrast = run_asset(A11Y_CONTRAST, args.clone()).await?;
+            let touch = run_asset(A11Y_TOUCH, args.clone()).await?;
+            let text = run_asset(A11Y_TEXT, args).await?;
+            let v = serde_json::json!({ "contrast": contrast, "touch": touch, "text": text });
+            print_result(&v, json); Ok(())
+        }
     }
 }
 
@@ -652,6 +732,14 @@ async fn cmd_verify(node_id: Option<String>, save: Option<String>, measure: bool
         }
     }
     Ok(())
+}
+
+/// Run a bundled command-asset JS body with `__args` injected, via the plugin.
+/// The asset body is plain statements ending in `return …`; we wrap it in an
+/// async IIFE so the plugin evaluates and returns its value.
+async fn run_asset(body: &str, args: Value) -> Result<Value> {
+    let code = format!("(async () => {{ const __args = {}; {} }})()", args, body);
+    exec_eval(&code).await
 }
 
 /// Ensure the daemon is up, then eval code via the plugin.

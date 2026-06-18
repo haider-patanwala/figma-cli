@@ -62,8 +62,8 @@ Add `--json` to any command for machine-readable output.
 
 ## Commands
 
-57 top-level commands. See [skill/reference/REFERENCE.md](../skill/reference/REFERENCE.md)
-for the full list and [skill/reference/JSX.md](../skill/reference/JSX.md) for the JSX
+57 top-level commands. See [skill/reference/REFERENCE.md](skill/reference/REFERENCE.md)
+for the full list and [skill/reference/JSX.md](skill/reference/JSX.md) for the JSX
 render syntax. Highlights:
 
 | Area | Commands |

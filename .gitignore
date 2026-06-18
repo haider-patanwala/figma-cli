@@ -7,3 +7,6 @@
 
 # Pure module copied by build-tools.sh:
 /tools-src/shadcn.js
+
+# Node fallback deps are installed at install time, not committed:
+/skill/js/node_modules

@@ -180,6 +180,16 @@ enum Commands {
         #[command(subcommand)]
         action: PropAction,
     },
+    /// Export design tokens as code (css / tailwind / dtcg).
+    ExportTokens {
+        #[command(subcommand)]
+        action: ExportTokensAction,
+    },
+    /// Get/set local CLI config (e.g. removebgApiKey).
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Export a node (or selection) to a file (png/svg/jpg/pdf).
     Export {
         /// Format: png, svg, jpg, pdf.
@@ -211,6 +221,26 @@ enum DaemonAction {
 enum TokensAction {
     /// Install a preset by name (currently: shadcn).
     Preset { name: String },
+    /// Create a 4px-base spacing scale.
+    Spacing { #[arg(short, long, default_value = "Spacing")] collection: String },
+    /// Create a border-radius scale.
+    Radii { #[arg(short, long, default_value = "Radii")] collection: String },
+}
+
+#[derive(Subcommand)]
+enum ExportTokensAction {
+    /// Export variables as CSS custom properties.
+    Css,
+    /// Export color variables as a Tailwind config.
+    Tailwind,
+    /// Export variables as W3C Design Tokens (DTCG) JSON.
+    Dtcg { output: Option<String> },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    Set { key: String, value: String },
+    Get { key: String },
 }
 
 #[derive(Subcommand)]
@@ -320,6 +350,15 @@ enum VarAction {
         #[arg(short, long)]
         collection: Option<String>,
     },
+    /// Create a single variable.
+    Create {
+        name: String,
+        #[arg(short, long)] collection: String,
+        #[arg(short, long)] r#type: String,
+        #[arg(short, long)] value: Option<String>,
+    },
+    /// Find variables whose name contains a pattern.
+    Find { pattern: String },
 }
 
 #[tokio::main]
@@ -379,7 +418,41 @@ async fn run(cli: Cli) -> Result<()> {
                 print_result(&v, json);
                 Ok(())
             }
+            TokensAction::Spacing { collection } => {
+                let v = run_asset(TOKENS_SPACING, serde_json::json!({ "collection": collection })).await?;
+                print_result(&v, json); Ok(())
+            }
+            TokensAction::Radii { collection } => {
+                let v = run_asset(TOKENS_RADII, serde_json::json!({ "collection": collection })).await?;
+                print_result(&v, json); Ok(())
+            }
         },
+        Commands::ExportTokens { action } => {
+            match action {
+                ExportTokensAction::Css => { let v = exec_eval(&wrap_iife(EXPORT_CSS)).await?; print_result(&v, json); }
+                ExportTokensAction::Tailwind => { let v = exec_eval(&wrap_iife(EXPORT_TAILWIND)).await?; print_result(&v, json); }
+                ExportTokensAction::Dtcg { output } => {
+                    let v = exec_eval(&wrap_iife(EXPORT_DTCG)).await?;
+                    if let (Some(path), Some(s)) = (output, v.as_str()) {
+                        std::fs::write(&path, format!("{s}\n"))?;
+                        if json { print_result(&serde_json::json!({ "saved": path }), true); } else { println!("✓ wrote DTCG tokens → {path}"); }
+                    } else {
+                        print_result(&v, json);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Config { action } => {
+            match action {
+                ConfigAction::Set { key, value } => { cfg_set(&key, &value)?; if !json { println!("✓ config saved: {key}"); } }
+                ConfigAction::Get { key } => {
+                    let val = cfg_get(&key)?;
+                    match val { Some(v) => println!("{v}"), None => if !json { println!("(not set)") } }
+                }
+            }
+            Ok(())
+        }
         Commands::Find { query } => {
             let code = format!(
                 "return figma.currentPage.findAll(n => n.name.toLowerCase().includes({})).map(n => ({{ id: n.id, name: n.name, type: n.type }}))",
@@ -695,7 +768,51 @@ async fn cmd_var(action: VarAction, json: bool) -> Result<()> {
             print_result(&v, json);
             Ok(())
         }
+        VarAction::Create { name, collection, r#type, value } => {
+            let code = cmds::var_create(&name, &collection, &r#type, value.as_deref());
+            let v = exec_eval(&code).await?;
+            print_result(&v, json);
+            Ok(())
+        }
+        VarAction::Find { pattern } => {
+            let v = exec_eval(&cmds::var_find(&pattern)).await?;
+            print_result(&v, json);
+            Ok(())
+        }
     }
+}
+
+const TOKENS_SPACING: &str = include_str!("../assets/cmd/tokens_spacing.js");
+const TOKENS_RADII: &str = include_str!("../assets/cmd/tokens_radii.js");
+const EXPORT_CSS: &str = include_str!("../assets/cmd/export_css.js");
+const EXPORT_TAILWIND: &str = include_str!("../assets/cmd/export_tailwind.js");
+const EXPORT_DTCG: &str = include_str!("../assets/cmd/export_dtcg.js");
+
+/// Wrap a param-free asset body (plain statements ending in `return …`) in an async IIFE.
+fn wrap_iife(body: &str) -> String {
+    format!("(async () => {{ {body} }})()")
+}
+
+// Local CLI config stored at ~/.figma-ds-cli/config.json.
+fn cfg_path() -> std::path::PathBuf {
+    config::config_dir().join("config.json")
+}
+fn cfg_load() -> serde_json::Map<String, Value> {
+    std::fs::read_to_string(cfg_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+fn cfg_set(key: &str, value: &str) -> Result<()> {
+    let mut m = cfg_load();
+    m.insert(key.to_string(), Value::String(value.to_string()));
+    std::fs::create_dir_all(config::config_dir())?;
+    std::fs::write(cfg_path(), serde_json::to_string_pretty(&Value::Object(m))?)?;
+    Ok(())
+}
+fn cfg_get(key: &str) -> Result<Option<String>> {
+    Ok(cfg_load().get(key).and_then(|v| v.as_str().map(String::from)))
 }
 
 async fn cmd_export(format: String, node_id: Option<String>, output: Option<String>, scale: f64, json: bool) -> Result<()> {

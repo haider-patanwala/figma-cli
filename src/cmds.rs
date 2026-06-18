@@ -342,6 +342,32 @@ pub fn duplicate(node_id: Option<&str>, offset: f64) -> String {
     }
 }
 // --------------------------------------------------------------------------
+// variables: create / find
+// --------------------------------------------------------------------------
+
+pub fn var_create(name: &str, collection: &str, vtype: &str, value: Option<&str>) -> String {
+    let t = vtype.to_uppercase();
+    let set_val = match value {
+        Some(val) => {
+            let v = js_string(val);
+            format!("let figmaValue = {v}; if ({tj} === 'COLOR') figmaValue = hexToRgb({v}); else if ({tj} === 'FLOAT') figmaValue = parseFloat({v}); else if ({tj} === 'BOOLEAN') figmaValue = {v} === 'true'; v.setValueForMode(modeId, figmaValue);", tj = js_string(&t))
+        }
+        None => String::new(),
+    };
+    wrap_async(&format!(
+        "const cols = await figma.variables.getLocalVariableCollectionsAsync();\nlet col = cols.find(c => c.id === {c} || c.name === {c});\nif (!col) return 'Collection not found: ' + {c};\nconst modeId = col.modes[0].modeId;\nfunction hexToRgb(hex) {{ const r = /^#?([a-f\\d]{{2}})([a-f\\d]{{2}})([a-f\\d]{{2}})$/i.exec(hex); return r ? {{ r: parseInt(r[1],16)/255, g: parseInt(r[2],16)/255, b: parseInt(r[3],16)/255 }} : null; }}\nconst v = figma.variables.createVariable({n}, col, {t});\n{set_val}\nreturn {{ id: v.id, name: v.name }};",
+        c = js_string(collection), n = js_string(name), t = js_string(&t)
+    ))
+}
+
+pub fn var_find(pattern: &str) -> String {
+    wrap_async(&format!(
+        "const vars = await figma.variables.getLocalVariablesAsync();\nconst p = {p}.toLowerCase();\nreturn vars.filter(v => v.name.toLowerCase().includes(p)).map(v => ({{ name: v.name, type: v.resolvedType }}));",
+        p = js_string(pattern)
+    ))
+}
+
+// --------------------------------------------------------------------------
 // slots
 // --------------------------------------------------------------------------
 

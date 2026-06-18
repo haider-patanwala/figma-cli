@@ -8,6 +8,7 @@ mod daemon;
 mod engine;
 mod jsgen;
 mod lifecycle;
+mod tools;
 mod transport;
 
 use anyhow::Result;
@@ -197,6 +198,11 @@ enum Commands {
     },
     /// Delete multiple nodes (comma-separated ids or JSON array).
     DeleteBatch { node_ids: String },
+    /// Extract / generate gradients.
+    Gradient {
+        #[command(subcommand)]
+        action: GradientAction,
+    },
     /// Export a node (or selection) to a file (png/svg/jpg/pdf).
     Export {
         /// Format: png, svg, jpg, pdf.
@@ -248,6 +254,31 @@ enum ExportTokensAction {
 enum ConfigAction {
     Set { key: String, value: String },
     Get { key: String },
+}
+
+#[derive(Subcommand)]
+enum GradientAction {
+    /// Extract a gradient from an image. --mode linear|mesh, --apply-to <id>.
+    Extract {
+        image: String,
+        #[arg(long, default_value = "linear")] mode: String,
+        #[arg(long)] apply_to: Option<String>,
+        #[arg(long, default_value = "auto")] direction: String,
+        #[arg(long, default_value_t = 3)] stops: u32,
+        #[arg(long)] blur: Option<f64>,
+        #[arg(long)] no_trim: bool,
+    },
+    /// Generate a mesh-gradient wallpaper from a palette. e.g. "#a,#b,#c".
+    Mesh {
+        colors: String,
+        #[arg(long)] apply_to: Option<String>,
+        #[arg(long)] base: Option<String>,
+        #[arg(long, default_value = "1920x1080")] size: String,
+        #[arg(long)] blur: Option<f64>,
+        #[arg(long, default_value = "auto")] style: String,
+        #[arg(long)] seed: Option<i64>,
+        #[arg(long, default_value = "Mesh Wallpaper")] name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -596,6 +627,50 @@ async fn run(cli: Cli) -> Result<()> {
                 .unwrap_or_else(|_| node_ids.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
             let v = exec_eval(&cmds::delete_batch(&serde_json::to_string(&ids).unwrap())).await?;
             print_result(&v, json); Ok(())
+        }
+        Commands::Gradient { action } => cmd_gradient(action, json).await,
+    }
+}
+
+async fn cmd_gradient(action: GradientAction, json: bool) -> Result<()> {
+    match action {
+        GradientAction::Extract { image, mode, apply_to, direction, stops, blur, no_trim } => {
+            // Decode in Rust, analyze in the tools engine.
+            let img = tools::decode_image(&image, 256)?;
+            let trim = !no_trim;
+            if mode == "mesh" {
+                let args = serde_json::json!({ "img": img, "trim": trim, "blur": blur }).to_string();
+                let recipe: Value = serde_json::from_str(&tools::call("meshExtract", &args)?)?;
+                if let Some(id) = apply_to {
+                    let v = exec_eval(&cmds::apply_mesh_wallpaper(Some(&id), &recipe, 0.0, 0.0, "")).await?;
+                    print_result(&v, json);
+                } else {
+                    print_result(&recipe, json);
+                }
+            } else {
+                let args = serde_json::json!({ "img": img, "direction": direction, "stops": stops, "trim": trim }).to_string();
+                let out: Value = serde_json::from_str(&tools::call("gradientExtract", &args)?)?;
+                if let Some(id) = apply_to {
+                    let paint = out.get("paint").cloned().unwrap_or(Value::Null);
+                    let v = exec_eval(&cmds::apply_paint(&id, &paint)).await?;
+                    print_result(&v, json);
+                } else {
+                    print_result(&out, json);
+                }
+            }
+            Ok(())
+        }
+        GradientAction::Mesh { colors, apply_to, base, size, blur, style, seed, name } => {
+            let palette: Vec<String> = colors.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let args = serde_json::json!({ "colors": palette, "base": base, "blur": blur, "style": style, "seed": seed }).to_string();
+            let recipe: Value = serde_json::from_str(&tools::call("meshFromColors", &args)?)?;
+            // Apply to an existing frame, or create a new wallpaper frame.
+            let (w, h) = size.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))).unwrap_or((1920.0, 1080.0));
+            let code = cmds::apply_mesh_wallpaper(apply_to.as_deref(), &recipe, w, h, &name);
+            let v = exec_eval(&code).await?;
+            save_last_render(&v);
+            print_result(&v, json);
+            Ok(())
         }
     }
 }

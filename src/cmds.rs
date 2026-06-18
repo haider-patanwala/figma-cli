@@ -342,6 +342,40 @@ pub fn duplicate(node_id: Option<&str>, offset: f64) -> String {
     }
 }
 // --------------------------------------------------------------------------
+// gradient apply
+// --------------------------------------------------------------------------
+
+/// Set a node's fills to a single (gradient) paint.
+pub fn apply_paint(node_id: &str, paint: &serde_json::Value) -> String {
+    wrap_async(&format!(
+        "await figma.loadAllPagesAsync();\nconst id = {id};\nlet n = /^selected$/i.test(id) ? figma.currentPage.selection[0] : await figma.getNodeByIdAsync(id);\nif (!n) throw new Error('Node not found: ' + id);\nif (!('fills' in n)) throw new Error('Node does not support fills: ' + n.type);\nn.fills = [{paint}];\nreturn {{ name: n.name, type: n.type }};",
+        id = js_string(node_id), paint = paint
+    ))
+}
+
+/// Build (or populate) a mesh-gradient frame from a recipe { base, blobs, blurFraction }.
+/// When `apply_to` is None, creates a new W×H frame; else populates the target frame.
+pub fn apply_mesh_wallpaper(apply_to: Option<&str>, recipe: &serde_json::Value, w: f64, h: f64, name: &str) -> String {
+    let base = recipe.get("base").cloned().unwrap_or(serde_json::Value::String("#000000".into()));
+    let blobs = recipe.get("blobs").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+    let blur_frac = recipe.get("blurFraction").and_then(|v| v.as_f64()).unwrap_or(0.42);
+    let target = match apply_to {
+        Some(id) => format!(
+            "const id = {id};\nif (/^selected$/i.test(id)) {{ __target = figma.currentPage.selection[0]; if (!__target) throw new Error('Nothing selected'); }} else {{ __target = await figma.getNodeByIdAsync(id); if (!__target) throw new Error('Node not found: ' + id); }}\nif (__target.type !== 'FRAME') throw new Error('Mesh requires a FRAME target; got ' + __target.type);\nfor (const c of [...__target.children]) c.remove();",
+            id = js_string(id)
+        ),
+        None => format!(
+            "__target = figma.createFrame();\n__target.name = {name};\n__target.resize({w}, {h});\nlet __x = 0; figma.currentPage.children.forEach(n => {{ __x = Math.max(__x, n.x + (n.width || 0)); }});\n__target.x = __x + 100; __target.y = 0;",
+            name = js_string(name)
+        ),
+    };
+    wrap_async(&format!(
+        "await figma.loadAllPagesAsync();\nconst __hex = (h) => {{ h = h.replace('#',''); return {{ r: parseInt(h.slice(0,2),16)/255, g: parseInt(h.slice(2,4),16)/255, b: parseInt(h.slice(4,6),16)/255 }}; }};\nlet __target;\n{target}\nconst W = __target.width, H = __target.height, D = Math.min(W, H);\n__target.clipsContent = true;\n__target.fills = [{{ type:'SOLID', color: __hex({base}), opacity:1, visible:true, blendMode:'NORMAL' }}];\nconst __blobs = {blobs};\nconst __blur = Math.round(D * {blur_frac});\nfor (const b of __blobs) {{ const e = figma.createEllipse(); const R = Math.round(D * b.r); e.resize(R*2, R*2); e.x = b.fx*W - R; e.y = b.fy*H - R; e.fills = [{{ type:'SOLID', color: __hex(b.color), opacity:1, visible:true, blendMode:'NORMAL' }}]; e.effects = [{{ type:'LAYER_BLUR', radius: Math.round(__blur * (b.blurMul || 1)), visible: true }}]; __target.appendChild(e); }}\nfigma.viewport.scrollAndZoomIntoView([__target]);\nreturn {{ id: __target.id, name: __target.name, blobs: __blobs.length, blur: __blur, w: W, h: H }};",
+        base = base, blobs = blobs
+    ))
+}
+
+// --------------------------------------------------------------------------
 // figjam (runs in the same plugin context; FigJam editor)
 // --------------------------------------------------------------------------
 

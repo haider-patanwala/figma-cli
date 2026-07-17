@@ -1,6 +1,6 @@
 [package]
 name = "figma-cli"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "Control Figma Desktop from the CLI via a plugin bridge — no API key. Rust port (Safe Mode)."
 license = "MIT"

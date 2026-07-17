@@ -1,8 +1,14 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
     body {
       font-family: Inter, -apple-system, sans-serif;
       font-size: 11px;
@@ -14,31 +20,64 @@
       padding: 10px 12px;
       gap: 4px;
     }
+
     .row {
       display: flex;
       align-items: center;
       gap: 6px;
     }
+
     .dot {
       width: 8px;
       height: 8px;
       border-radius: 50%;
       background: #666;
     }
-    .dot.connecting { background: #f59e0b; animation: pulse 1s infinite; }
-    .dot.connected { background: #22c55e; }
-    .dot.error { background: #ef4444; }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
+
+    .dot.connecting {
+      background: #f59e0b;
+      animation: pulse 1s infinite;
     }
-    .title { font-weight: 600; font-size: 12px; }
-    #status { color: #aaa; }
-    .hint { font-size: 9px; color: #666; margin-top: 2px; }
+
+    .dot.connected {
+      background: #22c55e;
+    }
+
+    .dot.error {
+      background: #ef4444;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.4;
+      }
+    }
+
+    .title {
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    #status {
+      color: #aaa;
+    }
+
+    .hint {
+      font-size: 9px;
+      color: #666;
+      margin-top: 2px;
+    }
   </style>
 </head>
+
 <body>
-  <div class="title">Figma DS CLI</div>
+  <div class="title">Figma CLI</div>
   <div class="row">
     <div id="dot" class="dot connecting"></div>
     <span id="status">Connecting...</span>
@@ -86,7 +125,7 @@
               if (s !== socket) {
                 s.onclose = null;  // Prevent triggering reconnect
                 s.onerror = null;
-                try { s.close(); } catch {}
+                try { s.close(); } catch { }
               }
             });
 
@@ -106,9 +145,9 @@
           };
 
           // During scan: ignore close/error (don't trigger reconnect)
-          socket.onclose = () => {};
-          socket.onerror = () => {};
-        } catch (e) {}
+          socket.onclose = () => { };
+          socket.onerror = () => { };
+        } catch (e) { }
       });
 
       // If no connection after 1.5s, retry (faster than 3s)
@@ -116,7 +155,7 @@
         if (!connected) {
           attempts.forEach(s => {
             s.onclose = null;
-            try { s.close(); } catch {}
+            try { s.close(); } catch { }
           });
           clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(connectParallel, 300);
@@ -230,4 +269,5 @@
     connect();
   </script>
 </body>
+
 </html>
